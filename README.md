@@ -1,5 +1,6 @@
 # FCOS
-
+this is an unofficial implement of FCOS using pytorch, the backbone is resnet50 and the input size is 640(the large side)
+.I trained the FCOS 18 epochs on coco using adam optimizer.the final map is 36.5 
 
 ## performance on COCO
 ```shell script
