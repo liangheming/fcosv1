@@ -21,8 +21,8 @@ if __name__ == '__main__':
         _, _, h, w = img_input.shape
         targets[:, 3:] = targets[:, 3:] * torch.tensor(data=[w, h, w, h])
         cls_outputs, reg_outputs, center_outputs, grids = net(img_input)
-        total_loss, detail_loss = creterion(cls_outputs, reg_outputs, center_outputs, grids,
-                                            targets)
+        total_loss, detail_loss, num_match = creterion(cls_outputs, reg_outputs, center_outputs, grids,
+                                                       targets)
         cls_loss, reg_loss, center_loss = detail_loss
         print(total_loss)
         print(cls_loss, reg_loss, center_loss)

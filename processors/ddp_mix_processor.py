@@ -6,7 +6,7 @@ import torch.distributed as dist
 from tqdm import tqdm
 from torch import nn
 
-from apex import amp
+from torch.cuda import amp
 from torch.utils.data.distributed import DistributedSampler
 from datasets.coco import COCODataSets
 from nets.fcos import FCOS
@@ -21,7 +21,7 @@ from commons.optims_utils import WarmUpCosineDecayMultiStepLRAdjust, split_optim
 rand_seed(1024)
 
 
-class DDPApexProcessor(object):
+class DDPMixProcessor(object):
     def __init__(self, cfg_path):
         with open(cfg_path, 'r') as rf:
             self.cfg = yaml.safe_load(rf)
@@ -79,7 +79,7 @@ class DDPApexProcessor(object):
         self.local_rank = local_rank
         self.device = torch.device("cuda", local_rank)
         model.to(self.device)
-        model, optimizer = amp.initialize(model, optimizer, opt_level='O1', verbosity=0)
+        self.scaler = amp.GradScaler(enabled=True)
         if self.optim_cfg['sync_bn']:
             model = nn.SyncBatchNorm.convert_sync_batchnorm(model)
         self.model = nn.parallel.distributed.DistributedDataParallel(model,
@@ -125,21 +125,19 @@ class DDPApexProcessor(object):
                 img_tensor = img_tensor.to(self.device)
                 targets_tensor = targets_tensor.to(self.device)
             self.optimizer.zero_grad()
-            cls_outputs, reg_outputs, center_outputs, grids = self.model(img_tensor)
-            total_loss, detail_loss, total_num = self.creterion(cls_outputs,
-                                                                reg_outputs,
-                                                                center_outputs,
-                                                                grids,
-                                                                targets_tensor)
+            with amp.autocast(enabled=True):
+                cls_outputs, reg_outputs, center_outputs, grids = self.model(img_tensor)
+                total_loss, detail_loss, total_num = self.creterion(cls_outputs,
+                                                                    reg_outputs,
+                                                                    center_outputs,
+                                                                    grids,
+                                                                    targets_tensor)
             match_num += total_num
-            with amp.scale_loss(total_loss, self.optimizer) as scaled_loss:
-                scaled_loss.backward()
-            max_norm = self.optim_cfg.get('max_norm', None)
-            if max_norm is not None:
-                nn.utils.clip_grad_norm_(amp.master_params(self.optimizer), max_norm=max_norm, norm_type=2)
+            self.scaler.scale(total_loss).backward()
             self.lr_adjuster(self.optimizer, i, epoch)
             lr = self.optimizer.param_groups[0]['lr']
-            self.optimizer.step()
+            self.scaler.step(self.optimizer)
+            self.scaler.update()
             self.ema.update(self.model)
             loss_cls, loss_reg, loss_center = detail_loss
             loss_list[0].append(total_loss.item())

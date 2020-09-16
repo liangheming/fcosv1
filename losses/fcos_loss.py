@@ -1,10 +1,20 @@
 import torch
+import numpy as np
 from torch import nn
+from utils.fcos import BoxCoder
+from losses.commons import IOULoss
 
 INF = 1e8
 
 
 def iou(predicts, targets, weights=None, iou_type="giou"):
+    """
+    :param predicts:
+    :param targets:
+    :param weights:
+    :param iou_type:
+    :return:
+    """
     assert len(predicts) == len(targets)
     pred_left = predicts[:, 0]
     pred_top = predicts[:, 1]
@@ -45,19 +55,35 @@ def iou(predicts, targets, weights=None, iou_type="giou"):
 
 
 class FCOSLossBuilder(object):
-    def __init__(self, radius=0):
+    def __init__(self, radius=1, strides=None, layer_limits=None):
         self.radius = radius
+        self.box_coder = BoxCoder()
+        if strides is None:
+            strides = [8, 16, 32, 64, 128]
+        self.strides = torch.tensor(strides)
+        if layer_limits is None:
+            layer_limits = [64, 128, 256, 512]
+        expand_limits = np.array(layer_limits)[None].repeat(2).tolist()
+        self.layer_limits = torch.tensor([-1.] + expand_limits + [INF]).view(-1, 2)
 
     @torch.no_grad()
     def __call__(self, bs, grids, targets):
         """
         :param bs: batch_size
-        :param grids: list[layer_grid] shape:(h,w,4)  detail(x,y,min_limit,max_limit)
+        :param grids: list[layer_grid] shape:(h,w,2)  detail(x,y)
         :param targets: [gt, 6] (bs, weights, label_id, x1, y1, x2, y2)
         :return:
         """
-        expand_grid = torch.cat([grid.view(-1, 4) for grid in grids], dim=0)
-        # [all, 4]
+        device = grids[0].device
+        self.layer_limits = self.layer_limits.to(device)
+        self.strides = self.strides.to(device)
+        # [num_grids,5] (xc,yc,min_limit,max_limit,stride)
+        expand_grid = torch.cat(
+            [torch.cat([grid, layer_limit.expand_as(grid), stride.expand_as(grid[..., [0]])],
+                       dim=-1).view(-1, 5)
+             for grid, layer_limit, stride in zip(grids, self.layer_limits, self.strides)
+             ], dim=0)
+
         batch_reg_targets = list()
         batch_labels_targets = list()
         for bi in range(bs):
@@ -66,24 +92,31 @@ class FCOSLossBuilder(object):
             if len(batch_targets) == 0:
                 batch_reg_targets.append(torch.Tensor())
                 batch_labels_targets.append(torch.ones(size=(len(expand_grid),),
-                                                       device=expand_grid.device,
+                                                       device=device,
                                                        dtype=torch.float32) * -1)
                 continue
-            left = expand_grid[:, 0][:, None] - batch_targets[:, 2][None, :]
-            top = expand_grid[:, 1][:, None] - batch_targets[:, 3][None, :]
-            right = batch_targets[:, 4][None, :] - expand_grid[:, 0][:, None]
-            bottom = batch_targets[:, 5][None, :] - expand_grid[:, 1][:, None]
+            reg_target_per_img = self.box_coder.encoder(expand_grid, batch_targets[:, 2:])
+            if self.radius == 0:
+                valid_in_box = reg_target_per_img.min(dim=2)[0] > 0
+            else:
+                limit_gt_xy = (batch_targets[:, [2, 3]] + batch_targets[:, [4, 5]]) / 2
+                limit_gt_min_xy = limit_gt_xy[None, :, :] - expand_grid[:, None, [4, 4]] * self.radius
+                limit_gt_max_xy = limit_gt_xy[None, :, :] + expand_grid[:, None, [4, 4]] * self.radius
+                limit_gt_min_xy = torch.where(limit_gt_min_xy > batch_targets[None, :, [2, 3]],
+                                              limit_gt_min_xy, batch_targets[None, :, [2, 3]])
+                limit_gt_max_xy = torch.where(limit_gt_max_xy < batch_targets[None, :, [4, 5]],
+                                              limit_gt_max_xy, batch_targets[None, :, [4, 5]])
 
-            # [all,gt,4]
-            reg_target_per_img = torch.stack([left, top, right, bottom], dim=2)
-            # [all,gt]
-            valid_in_box = reg_target_per_img.min(dim=2)[0] > 0
-            # [all, gt]
+                # print(limit_gt_min_xy.shape)
+                left_top = expand_grid[:, None, [0, 1]] - limit_gt_min_xy
+                right_bottom = limit_gt_max_xy - expand_grid[:, None, [0, 1]]
+                valid_in_box = torch.cat([left_top, right_bottom], dim=2).min(dim=2)[0] > 0
             max_reg_targets_per_im = reg_target_per_img.max(dim=2)[0]
 
             is_card_in_level = (max_reg_targets_per_im >= expand_grid[:, [2]]) & (
                     max_reg_targets_per_im <= expand_grid[:, [3]])
             gt_area = (batch_targets[:, 4] - batch_targets[:, 2]) * (batch_targets[:, 5] - batch_targets[:, 3])
+
             locations_to_gt_area = gt_area[None, :].repeat(len(expand_grid), 1)
             locations_to_gt_area[~valid_in_box] = INF
             locations_to_gt_area[~is_card_in_level] = INF
@@ -97,11 +130,12 @@ class FCOSLossBuilder(object):
 
 
 class FCOSLoss(object):
-    def __init__(self, alpha=0.25, gamma=2.0):
+    def __init__(self, radius=0, alpha=0.25, gamma=2.0, iou_type="giou", strides=None, layer_limits=None):
         super(FCOSLoss, self).__init__()
         self.alpha = alpha
         self.gamma = gamma
-        self.builder = FCOSLossBuilder()
+        self.iou_loss = IOULoss(iou_type, coord_type="ltrb")
+        self.builder = FCOSLossBuilder(radius=radius, strides=strides, layer_limits=layer_limits)
         self.centerness_loss = nn.BCEWithLogitsLoss(reduction="sum")
 
     @staticmethod
@@ -117,7 +151,7 @@ class FCOSLoss(object):
         :param cls_outputs: list() [bs,80,h,w]
         :param reg_outputs: list() [bs,4,h,w]
         :param center_outputs: list() [bs,1,h,w]
-        :param grids: list() [bs,h,w,4] (x,y,min_limit,max_limit)
+        :param grids: list() [bs,h,w,4] (x,y)
         :param targets: [gts,7] (batch_id,weights,label_id,x1,y1,x2,y2)
         :return:
         """
@@ -160,6 +194,8 @@ class FCOSLoss(object):
             pos_center_predicts = batch_centerness_predicts[pos_idx]
             centerness_targets = self.build_centerness(pos_reg_targets)
             iou_loss = iou(pos_reg_predicts, pos_reg_targets, weights=centerness_targets)
+            # iou_loss = self.iou_loss(pos_reg_predicts, pos_reg_targets)
+            # iou_loss = (iou_loss * centerness_targets).sum()
             centerness_loss = self.centerness_loss(pos_center_predicts, centerness_targets)
 
             cls_targets = torch.zeros_like(batch_cls_predicts)

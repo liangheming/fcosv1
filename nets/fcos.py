@@ -10,25 +10,51 @@ def switch_backbones(bone_name):
     from nets.resnet import resnet18, resnet34, resnet50, resnet101, resnet152, \
         resnext50_32x4d, resnext101_32x8d, wide_resnet50_2, wide_resnet101_2
     if bone_name == "resnet18":
-        return resnet18()
+        return resnet18(pretrained=True)
     elif bone_name == "resnet34":
-        return resnet34()
+        return resnet34(pretrained=True)
     elif bone_name == "resnet50":
-        return resnet50()
+        return resnet50(pretrained=True)
     elif bone_name == "resnet101":
-        return resnet101()
+        return resnet101(pretrained=True)
     elif bone_name == "resnet152":
-        return resnet152()
+        return resnet152(pretrained=True)
     elif bone_name == "resnext50_32x4d":
-        return resnext50_32x4d()
+        return resnext50_32x4d(pretrained=True)
     elif bone_name == "resnext101_32x8d":
-        return resnext101_32x8d()
+        return resnext101_32x8d(pretrained=True)
     elif bone_name == "wide_resnet50_2":
-        return wide_resnet50_2()
+        return wide_resnet50_2(pretrained=True)
     elif bone_name == "wide_resnet101_2":
-        return wide_resnet101_2()
+        return wide_resnet101_2(pretrained=True)
     else:
         raise NotImplementedError(bone_name)
+
+
+class BasicBlocks(nn.Module):
+    def __init__(self, in_channel, out_channels, num_blocks, dcn_head=False):
+        super(BasicBlocks, self).__init__()
+        assert "dcn_head is not support now, coming soon"
+        bones = list()
+        for i in range(num_blocks):
+            if i == 0:
+                conv_func = CGR(in_channel, out_channels, 3, 1)
+                bones.append(conv_func)
+            elif i == num_blocks - 1 and dcn_head:
+                conv_func = CGR(out_channels, out_channels, 3, 1)
+                bones.append(conv_func)
+            else:
+                conv_func = CGR(out_channels, out_channels, 3, 1)
+                bones.append(conv_func)
+        self.bones = nn.Sequential(*bones)
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.normal_(m.weight, std=0.01)
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+
+    def forward(self, x):
+        return self.bones(x)
 
 
 class Scale(nn.Module):
@@ -47,42 +73,28 @@ class FCOSHead(nn.Module):
                  num_cls=80,
                  strides=None,
                  layer_num=5,
-                 layer_limits=None):
+                 centerness_on_reg=False):
         super(FCOSHead, self).__init__()
         self.num_cls = num_cls
         self.layer_num = layer_num
+        self.centerness_on_reg = centerness_on_reg
         if strides is None:
             strides = [8, 16, 32, 64, 128]
         self.strides = strides
-        if layer_limits is None:
-            layer_limits = [64, 128, 256, 512]
-        self.layer_limits = layer_limits
-        assert len(layer_limits) + 1 == self.layer_num
-        self.layer_limits = [-1] + layer_limits + [INF]
         self.scales = nn.ModuleList([Scale(init_val=1.0) for _ in range(self.layer_num)])
         self.grids = [torch.zeros(size=(0, 4))] * 5
-        self.cls_bones = list()
-        self.reg_bones = list()
-        for i in range(num_convs):
-            if i == 0:
-                cls_conv_func = CGR(in_channel, inner_channel, 3, 1)
-                reg_conv_func = CGR(in_channel, inner_channel, 3, 1)
-            else:
-                cls_conv_func = CGR(inner_channel, inner_channel, 3, 1)
-                reg_conv_func = CGR(inner_channel, inner_channel, 3, 1)
-            self.cls_bones.append(cls_conv_func)
-            self.reg_bones.append(reg_conv_func)
-        self.cls_bones = nn.Sequential(*self.cls_bones)
-        self.reg_bones = nn.Sequential(*self.reg_bones)
+        self.cls_bones = BasicBlocks(in_channel, inner_channel, num_convs)
+        self.reg_bones = BasicBlocks(in_channel, inner_channel, num_convs)
 
         self.cls_head = nn.Conv2d(inner_channel, num_cls, 3, 1, 1)
         self.reg_head = nn.Conv2d(inner_channel, 4, 3, 1, 1)
         self.centerness = nn.Conv2d(inner_channel, 1, 3, 1, 1)
-        for m in self.modules():
-            if isinstance(m, nn.Conv2d):
-                nn.init.normal_(m.weight, std=0.01)
-                if m.bias is not None:
-                    nn.init.constant_(m.bias, 0)
+        for module in [self.cls_head, self.reg_head, self.centerness]:
+            for m in module.modules():
+                if isinstance(m, nn.Conv2d):
+                    nn.init.normal_(m.weight, std=0.01)
+                    if m.bias is not None:
+                        nn.init.constant_(m.bias, 0)
         nn.init.constant_(self.cls_head.bias, -math.log((1 - 0.01) / 0.01))
 
     def build_grids(self, feature_maps):
@@ -96,10 +108,8 @@ class FCOSHead(nn.Module):
             _, _, ny, nx = feature_map.shape
             yv, xv = torch.meshgrid([torch.arange(ny), torch.arange(nx)])
             grid = torch.stack([xv,
-                                yv,
-                                torch.ones_like(xv).float() * self.layer_limits[i],
-                                torch.ones_like(xv).float() * self.layer_limits[i + 1]], dim=2)
-            grid[..., :2] = (grid[..., :2] + 0.5) * stride
+                                yv], dim=2)
+            grid = (grid + 0.5) * stride
             grids.append(grid)
         return grids
 
@@ -112,7 +122,10 @@ class FCOSHead(nn.Module):
             reg_tower = self.reg_bones(x)
             cls_outputs.append(self.cls_head(cls_tower))
             reg_outputs.append((self.scales[i](self.reg_head(reg_tower))).exp())
-            center_outputs.append(self.centerness(cls_tower))
+            if self.centerness_on_reg:
+                center_outputs.append(self.centerness(reg_tower))
+            else:
+                center_outputs.append(self.centerness(cls_tower))
         if self.grids[0] is None or self.grids[0].shape[0] != cls_outputs[0].shape[2]:
             with torch.no_grad():
                 grids = self.build_grids(xs)
@@ -129,7 +142,7 @@ class FCOSHead(nn.Module):
                 cls_output = cls_predict.permute(0, 2, 3, 1).contiguous().view(bs, -1, self.num_cls)
                 reg_output = reg_predict.permute(0, 2, 3, 1).contiguous().view(bs, -1, 4)
                 center_output = center_predict.permute(0, 2, 3, 1).contiguous().view(bs, -1, 1)
-                grid_output = grid[..., :2].view(-1, 2)[None]
+                grid_output = grid.view(-1, 2)[None]
                 reg_output[..., :2] = grid_output - reg_output[..., :2]
                 reg_output[..., 2:] = grid_output + reg_output[..., 2:]
                 cat_output = torch.cat([reg_output, center_output, cls_output], dim=-1)
@@ -139,7 +152,6 @@ class FCOSHead(nn.Module):
 
 class FCOS(nn.Module):
     def __init__(self,
-                 layer_limits=None,
                  strides=None,
                  num_cls=80,
                  backbone='resnet50'
@@ -153,13 +165,12 @@ class FCOS(nn.Module):
             256,
             4,
             num_cls,
-            strides,
-            layer_limits=layer_limits
+            strides
         )
 
-    def load_backbone_weighs(self, weights):
-        miss_state_dict = self.backbones.load_state_dict(weights, strict=False)
-        print(miss_state_dict)
+    # def load_backbone_weighs(self, weights):
+    #     miss_state_dict = self.backbones.load_state_dict(weights, strict=False)
+    #     print(miss_state_dict)
 
     def forward(self, x):
         c3, c4, c5 = self.backbones(x)
@@ -168,10 +179,14 @@ class FCOS(nn.Module):
         return out
 
 
-if __name__ == '__main__':
-    input_tensor = torch.rand(size=(4, 3, 640, 640)).float()
-    net = FCOS().eval()
-    net(input_tensor)
-    # cls_outputs, reg_outputs, center_outputs, grids = net(input_tensor)
-    # for grid in grids:
-    #     print(grid.shape)
+# if __name__ == '__main__':
+#     input_tensor = torch.rand(size=(4, 3, 640, 640)).float()
+#     net = FCOS(backbone="resnet18")
+#     net(input_tensor)
+#     cls_outputs, reg_outputs, center_outputs, grids = net(input_tensor)
+#     for grid in grids:
+#         print(grid.shape)
+#     net.eval()
+#     out = net(input_tensor)
+#     for grid in out:
+#         print(grid.shape)

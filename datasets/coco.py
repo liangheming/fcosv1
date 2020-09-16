@@ -4,10 +4,10 @@ import cv2 as cv
 import numpy as np
 from torch.utils.data.dataset import Dataset
 from pycocotools.coco import COCO
-from utils.boxs import draw_box, xyxy2xywh
-from utils.augmentations import Compose, OneOf, \
+from commons.boxs_utils import draw_box, xyxy2xywh
+from commons.augmentations import Compose, OneOf, \
     ScalePadding, RandNoise, Mosaic, MixUp, RandPerspective, HSV, Identity, LRFlip, RandCutOut
-
+cv.setNumThreads(0)
 coco_ids = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 27, 28, 31, 32, 33,
             34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61,
             62, 63, 64, 65, 67, 70, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 84, 85, 86, 87, 88, 89, 90]
@@ -45,9 +45,8 @@ default_aug_cfg = {
     'translate': 0.1,
     'scale': (0.6, 1.5),
     'shear': 0.0,
-    'beta': 1.5,
+    'beta': (8, 8),
     'pad_val': (103, 116, 123),
-    # 'pad_val': (114, 114, 114)
 }
 
 rgb_mean = [0.485, 0.456, 0.406]
@@ -173,37 +172,60 @@ class COCODataSets(Dataset):
 
     def set_transform(self):
         if self.augments:
+            color_jitter = OneOf(transforms=[Identity(),
+                                             HSV(p=1,
+                                                 hgain=self.aug_cfg['hsv_h'],
+                                                 sgain=self.aug_cfg['hsv_s'],
+                                                 vgain=self.aug_cfg['hsv_v']),
+                                             RandNoise()
+                                             ])
+            mosaic = Mosaic(self.img_paths,
+                            self.labels,
+                            color_gitter=color_jitter,
+                            target_size=self.img_size,
+                            pad_val=self.aug_cfg['pad_val'],
+                            )
+            mix_up = MixUp(self.img_paths,
+                           self.labels,
+                           color_gitter=color_jitter,
+                           target_size=self.img_size,
+                           pad_val=self.aug_cfg['pad_val'],
+                           beta=self.aug_cfg['beta'])
+            perspective_transform = RandPerspective(target_size=(self.img_size, self.img_size),
+                                                    scale=self.aug_cfg['scale'],
+                                                    degree=self.aug_cfg['degree'],
+                                                    translate=self.aug_cfg['translate'],
+                                                    shear=self.aug_cfg['shear'],
+                                                    pad_val=self.aug_cfg['pad_val'])
+            basic_transform = Compose(transforms=[
+                color_jitter,
+                RandCutOut(),
+                ScalePadding(target_size=self.img_size, padding_val=self.aug_cfg['pad_val']),
+                perspective_transform,
+            ])
+            aug_mosaic = Mosaic(self.img_paths,
+                                self.labels,
+                                color_gitter=mix_up,
+                                target_size=self.img_size,
+                                pad_val=self.aug_cfg['pad_val'],
+                                )
+            aug_mixup = MixUp(self.img_paths,
+                              self.labels,
+                              color_gitter=mosaic,
+                              target_size=self.img_size,
+                              pad_val=self.aug_cfg['pad_val'],
+                              beta=self.aug_cfg['beta'])
+
             self.transform = Compose(transforms=[
                 OneOf(transforms=[
-                    (0.6, Compose(transforms=[
-                        OneOf(transforms=[Identity(),
-                                          HSV(p=1,
-                                              hgain=self.aug_cfg['hsv_h'],
-                                              sgain=self.aug_cfg['hsv_s'],
-                                              vgain=self.aug_cfg['hsv_v']),
-                                          RandNoise()
-                                          ]),
-                        RandCutOut(),
-                        ScalePadding(target_size=self.img_size, padding_val=self.aug_cfg['pad_val']),
-                        RandPerspective(target_size=(self.img_size, self.img_size),
-                                        scale=self.aug_cfg['scale'],
-                                        degree=self.aug_cfg['degree'],
-                                        translate=self.aug_cfg['translate'],
-                                        shear=self.aug_cfg['shear'],
-                                        pad_val=self.aug_cfg['pad_val'])])),
-                    (0.4, Mosaic(self.img_paths,
-                                 self.labels,
-                                 color_gitter=OneOf(transforms=[Identity(),
-                                                                HSV(p=1,
-                                                                    hgain=self.aug_cfg['hsv_h'],
-                                                                    sgain=self.aug_cfg['hsv_s'],
-                                                                    vgain=self.aug_cfg['hsv_v']),
-                                                                RandNoise()]),
-                                 target_size=self.img_size,
-                                 pad_val=self.aug_cfg['pad_val']))
+                    (0.2, basic_transform),
+                    (0.8, mosaic),
+                    (0., mix_up),
+                    (0., aug_mosaic),
+                    (0., aug_mixup)
                 ]),
-
-                LRFlip()])
+                LRFlip()
+            ])
         else:
             self.transform = ScalePadding(target_size=(self.img_size, self.img_size),
                                           padding_val=self.aug_cfg['pad_val'])
@@ -238,8 +260,8 @@ if __name__ == '__main__':
             nonzero_index = torch.nonzero((target_tensor[:, 1] == weights), as_tuple=True)
             print(target_tensor[nonzero_index].shape)
         print("=" * 20)
-    for img_tensor, target_tensor, _ in dataloader:
-        for weights in target_tensor[:, 1].unique():
-            nonzero_index = torch.nonzero((target_tensor[:, 1] == weights), as_tuple=True)
-            print(target_tensor[nonzero_index].shape)
-        print("=" * 20)
+    # for img_tensor, target_tensor, _ in dataloader:
+    #     for weights in target_tensor[:, 1].unique():
+    #         nonzero_index = torch.nonzero((target_tensor[:, 1] == weights), as_tuple=True)
+    #         print(target_tensor[nonzero_index].shape)
+    #     print("=" * 20)
