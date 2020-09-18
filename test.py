@@ -7,8 +7,8 @@ from tqdm import tqdm
 from metrics.map import coco_map
 from datasets.coco import COCODataSets
 from torch.utils.data.dataloader import DataLoader
-from utils.boxs import non_max_suppression
-from utils.augmentations import ScalePadding
+from utils.fcos import non_max_suppression
+from commons.augmentations import ScalePadding
 from nets.fcos import FCOS
 
 rgb_mean = [0.485, 0.456, 0.406]
@@ -33,7 +33,7 @@ def valid_model():
                          augments=False,
                          debug=False,
                          remove_blank=False,
-                         img_size=640
+                         img_size=768
                          )
     vloader = DataLoader(dataset=vdata,
                          batch_size=4,
@@ -68,11 +68,11 @@ def write_coco_json():
     from pycocotools.coco import COCO
     img_root = "/home/huffman/data/val2017"
     model = FCOS()
-    weights = torch.load("weights/0_focs_last.pth")['ema']
+    weights = torch.load("weights/focs_last.pth")['ema']
     model.load_state_dict(weights)
     model.cuda().eval()
 
-    basic_transform = ScalePadding(target_size=(640, 640), padding_val=(103, 116, 123))
+    basic_transform = ScalePadding(target_size=(768, 768), padding_val=(103, 116, 123))
     coco = COCO("/home/huffman/data/annotations/instances_val2017.json")
     coco_predict_list = list()
     for img_id in tqdm(coco.imgs.keys()):

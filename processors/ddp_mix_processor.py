@@ -238,3 +238,5 @@ class DDPMixProcessor(object):
             self.train(epoch)
             if (epoch + 1) % self.val_cfg['interval'] == 0:
                 self.val(epoch)
+        dist.destroy_process_group()
+        torch.cuda.empty_cache()
