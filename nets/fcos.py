@@ -32,9 +32,10 @@ def non_max_suppression(prediction: torch.Tensor,
         batch_predicts_list = [torch.zeros(size=(0, 6), device=prediction[0].device).float()] * len(prediction)
         for lj in range(len(prediction)):
             one_layer_bath_predict = prediction[lj][bi]
-            reg_predicts = one_layer_bath_predict[:, :4].sigmoid()
-            center_predicts = one_layer_bath_predict[:, 4]
-            cls_predicts = one_layer_bath_predict[:, 5:]
+            reg_predicts = one_layer_bath_predict[:, :4]
+            cls_predicts = one_layer_bath_predict[:, 4:].sigmoid()
+            center_predicts = cls_predicts[:, 0]
+            cls_predicts = cls_predicts[:, 1:]
 
             max_val, max_idx = cls_predicts.max(dim=1)
             valid_bool_idx = max_val > conf_thresh
