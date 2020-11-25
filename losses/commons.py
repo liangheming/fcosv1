@@ -2,6 +2,37 @@ import torch
 import math
 
 
+def focal_loss(predicts, targets, alpha=0.25, gamma=2.0):
+    pos_loss = -alpha * targets * (
+            (1 - predicts) ** gamma) * predicts.log()
+    neg_loss = - (1 - alpha) * (1. - targets) * (predicts ** gamma) * (
+        (1 - predicts).log())
+    return pos_loss + neg_loss
+
+
+def mean_max(x):
+    """
+    :param x: [gt, tok_anchor]
+    :return:
+    """
+    weights = 1 / ((1 - x).clamp(min=1e-12))
+    weights /= weights.sum(-1)[:, None]
+    bag_prob = (weights * x).sum(-1)
+
+    return -bag_prob.clamp(min=1e-12).log()
+
+
+def smooth_l1_loss(predicts, target, beta=1. / 9):
+    """
+    very similar to the smooth_l1_loss from pytorch, but with
+    the extra beta parameter
+    """
+    n = torch.abs(predicts - target)
+    cond = n < beta
+    loss = torch.where(cond, 0.5 * n ** 2 / beta, n - 0.5 * beta)
+    return loss
+
+
 class BoxSimilarity(object):
     def __init__(self, iou_type="giou", coord_type="xyxy", eps=1e-9):
         self.iou_type = iou_type

@@ -4,7 +4,6 @@ import math
 import random
 import numpy as np
 from copy import deepcopy
-from torch import nn
 
 
 def rand_seed(seed=888):
@@ -84,26 +83,32 @@ class ModelEMA:
         copy_attr(self.ema, model, include, exclude)
 
 
-def fuse_conv_and_bn(conv, bn):
-    # https://tehnokv.com/posts/fusing-batchnorm-and-conv/
-    with torch.no_grad():
-        # init
-        fusedconv = nn.Conv2d(conv.in_channels,
-                              conv.out_channels,
-                              kernel_size=conv.kernel_size,
-                              stride=conv.stride,
-                              padding=conv.padding,
-                              groups=conv.groups,
-                              bias=True).to(conv.weight.device)
+def reduce_sum(tensor,clone=True):
+    import torch.distributed as dist
+    if clone:
+        tensor = tensor.clone()
+    dist.all_reduce(tensor, op=dist.ReduceOp.SUM)
+    return tensor
 
-        # prepare filters
-        w_conv = conv.weight.clone().view(conv.out_channels, -1)
-        w_bn = torch.diag(bn.weight.div(torch.sqrt(bn.eps + bn.running_var)))
-        fusedconv.weight.copy_(torch.mm(w_bn, w_conv).view(fusedconv.weight.size()))
 
-        # prepare spatial bias
-        b_conv = torch.zeros(conv.weight.size(0), device=conv.weight.device) if conv.bias is None else conv.bias
-        b_bn = bn.bias - bn.weight.mul(bn.running_mean).div(torch.sqrt(bn.running_var + bn.eps))
-        fusedconv.bias.copy_(torch.mm(w_bn, b_conv.reshape(-1, 1)).reshape(-1) + b_bn)
+class AverageLogger(object):
+    def __init__(self):
+        self.data = 0.
+        self.count = 0.
 
-        return fusedconv
+    def update(self, data, count=None):
+        self.data += data
+        if count is not None:
+            self.count += count
+        else:
+            self.count += 1
+
+    def avg(self):
+        return self.data / self.count
+
+    def sum(self):
+        return self.data
+
+    def reset(self):
+        self.data = 0.
+        self.count = 0.

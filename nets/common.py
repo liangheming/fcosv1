@@ -15,22 +15,6 @@ class CR(nn.Module):
         return x
 
 
-class CBR(nn.Module):
-    def __init__(self, in_channel, out_channel, kernel_size, stride=1, padding=None, bias=True):
-        super(CBR, self).__init__()
-        if padding is None:
-            padding = (kernel_size - 1) // 2
-        self.conv = nn.Conv2d(in_channel, out_channel, kernel_size, stride, padding, bias=bias)
-        self.bn = nn.BatchNorm2d(out_channel)
-        self.act = nn.ReLU(inplace=True)
-
-    def forward(self, x):
-        x = self.conv(x)
-        x = self.bn(x)
-        x = self.act(x)
-        return x
-
-
 class CGR(nn.Module):
     def __init__(self, in_channel, out_channel, kernel_size, stride=1, padding=None, bias=True):
         super(CGR, self).__init__()
@@ -43,6 +27,22 @@ class CGR(nn.Module):
     def forward(self, x):
         x = self.conv(x)
         x = self.gn(x)
+        x = self.act(x)
+        return x
+
+
+class CBR(nn.Module):
+    def __init__(self, in_channel, out_channel, kernel_size, stride=1, padding=None, bias=True):
+        super(CBR, self).__init__()
+        if padding is None:
+            padding = (kernel_size - 1) // 2
+        self.conv = nn.Conv2d(in_channel, out_channel, kernel_size, stride, padding, bias=bias)
+        self.bn = nn.BatchNorm2d(out_channel)
+        self.act = nn.ReLU(inplace=True)
+
+    def forward(self, x):
+        x = self.conv(x)
+        x = self.bn(x)
         x = self.act(x)
         return x
 
@@ -80,8 +80,8 @@ class FPN(nn.Module):
     def forward(self, xs):
         f3, f4, f5, f6, f7 = self.fpn_extractor(xs)
         p5 = self.p5_out(f5)
-        f4 = f4 + nn.UpsamplingNearest2d(size=(f4.shape[2:]))(f5)
+        f4 = f4 + nn.UpsamplingBilinear2d(size=(f4.shape[2:]))(f5)
         p4 = self.p4_out(f4)
-        f3 = f3 + nn.UpsamplingNearest2d(size=(f3.shape[2:]))(f4)
+        f3 = f3 + nn.UpsamplingBilinear2d(size=(f3.shape[2:]))(f4)
         p3 = self.p3_out(f3)
         return [p3, p4, p5, f6, f7]

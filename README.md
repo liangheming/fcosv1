@@ -11,8 +11,8 @@ torch >= 1.6
 torchvision >=0.7.0
 ```
 ## result
-we trained this repo on 2 GPUs with batch size 16(8 image per node).the total epoch is 24(about 180k iter),SGD with cosine lr decay is used for optimizing.
-finally, this repo achieves 37.5 mAp at 768px(max side) resolution with resnet50 backbone.
+we trained this repo on 4 GPUs with batch size 32(8 image per node).the total epoch is 24(about 180k iter),SGD with cosine lr decay is used for optimizing.
+finally, this repo achieves 37.5 mAp at 640px(max side) resolution with resnet50 backbone.
 ```shell script
 Average Precision  (AP) @[ IoU=0.50:0.95 | area=   all | maxDets=100 ] = 0.375
 Average Precision  (AP) @[ IoU=0.50      | area=   all | maxDets=100 ] = 0.571
@@ -37,20 +37,22 @@ for now we only support coco detection data.
 ### COCO
 * modify main.py (modify config file path)
 ```python
-from processors.ddp_mix_processor import DDPMixProcessor
+from solver.ddp_mix_solver import DDPMixSolver
 if __name__ == '__main__':
-    processor = DDPMixProcessor(cfg_path="your own config path") 
+    processor = DDPMixSolver(cfg_path="your own config path") 
     processor.run()
 ```
 * custom some parameters in *config.yaml*
 ```yaml
-model_name: retinanet
+model_name: fcos
 data:
-  train_annotation_path: ../annotations/instances_train2017.json 
-  val_annotation_path: ../annotations/instances_val2017.json
-  train_img_root: ../data/train2017
-  val_img_root: ../data/val2017
-  img_size: 768
+  train_annotation_path: data/annotations/instances_train2017.json
+#  train_annotation_path: data/annotations/instances_val2017.json
+  val_annotation_path: data/annotations/instances_val2017.json
+  train_img_root: data/train2017
+#  train_img_root: data/val2017
+  val_img_root: data/val2017
+  max_thresh: 640
   use_crowd: False
   batch_size: 8
   num_workers: 4
@@ -61,34 +63,32 @@ model:
   num_cls: 80
   strides: [8, 16, 32, 64, 128]
   backbone: resnet50
-  freeze_bn: False
-
-hyper_params:
+  pretrained: True
   alpha: 0.25
   gamma: 2.0
-  multi_scale: [768]
+  iou_type: giou
+  radius: 0
   layer_limits: [64, 128, 256, 512]
-  radius: 5
-  iou_type: ciou
-
+  iou_loss_weight: 0.5
+  reg_loss_weight: 1.3
+  conf_thresh: 0.05
+  nms_iou_thresh: 0.5
+  max_det: 300
 optim:
-  optimizer: SGD
-  lr: 0.01
-  momentum: 0.9
+  optimizer: Adam
+  lr: 0.0001
   milestones: [18,24]
-  cosine_weights: 1.0
-  warm_up_epoch: 1.
+  warm_up_epoch: 0
   weight_decay: 0.0001
-  epochs: 25
+  epochs: 24
   sync_bn: True
+  amp: True
 val:
   interval: 1
   weight_path: weights
-  conf_thresh: 0.05
-  iou_thresh: 0.5
-  max_det: 300
 
-gpus: 0,1
+
+gpus: 0,1,2,3
 ```
 
 * run train scripts

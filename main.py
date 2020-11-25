@@ -1,8 +1,8 @@
 # from processors.ddp_apex_processor import DDPApexProcessor
-from processors.ddp_mix_processor import DDPMixProcessor
+from solver.ddp_mix_solver import DDPMixSolver
 
-# python -m torch.distributed.launch --nproc_per_node=2 --master_port 50003 main.py
+# nohup python -m torch.distributed.launch --nproc_per_node=4 --master_port 50003 main.py >>train.log 2>&1 &
 
 if __name__ == '__main__':
-    processor = DDPMixProcessor(cfg_path="config/focs.yaml")
+    processor = DDPMixSolver(cfg_path="config/fcos.yaml")
     processor.run()
