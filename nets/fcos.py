@@ -260,7 +260,6 @@ default_cfg = {
     "conf_thresh": 0.01,
     "nms_iou_thresh": 0.5,
     "max_det": 300,
-
 }
 
 
